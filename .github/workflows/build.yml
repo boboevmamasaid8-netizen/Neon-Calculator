@@ -1,0 +1,131 @@
+name: Build Neon Calculator APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Buildozer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git zip unzip autoconf libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev \
+            libtinfo6 cmake libffi-dev libssl-dev \
+            build-essential
+          pip install --user buildozer cython==0.29.36
+
+      - name: Create Android app
+        run: |
+          mkdir -p app
+          cat > app/main.py <<'PY'
+          from kivy.app import App
+          from kivy.uix.boxlayout import BoxLayout
+          from kivy.uix.gridlayout import GridLayout
+          from kivy.uix.button import Button
+          from kivy.uix.label import Label
+
+          class NeonCalculator(App):
+              def build(self):
+                  self.expression = ""
+                  root = BoxLayout(orientation="vertical", padding=15, spacing=10)
+                  root.canvas.before.clear()
+                  self.display = Label(text="0", font_size=40, size_hint_y=.25)
+                  root.add_widget(self.display)
+                  grid = GridLayout(cols=4, spacing=8)
+                  buttons = ["AC", "⌫", "%", "÷", "7", "8", "9", "×",
+                             "4", "5", "6", "-", "1", "2", "3", "+",
+                             "0", "00", ".", "="]
+                  for item in buttons:
+                      b = Button(text=item, font_size=25,
+                                 background_normal="", background_color=(0.05, 0.8, 0.95, 1))
+                      b.bind(on_press=self.press)
+                      grid.add_widget(b)
+                  root.add_widget(grid)
+                  return root
+
+              def press(self, instance):
+                  import ast
+                  import operator
+                  value = instance.text
+                  if value == "AC":
+                      self.expression = ""
+                  elif value == "⌫":
+                      self.expression = self.expression[:-1]
+                  elif value == "=":
+                      try:
+                          expr = self.expression.replace("×", "*").replace("÷", "/")
+                          tree = ast.parse(expr, mode="eval")
+                          ops = {ast.Add: operator.add, ast.Sub: operator.sub,
+                                 ast.Mult: operator.mul, ast.Div: operator.truediv,
+                                 ast.Mod: operator.mod}
+                          def calc(node):
+                              if isinstance(node, ast.Expression):
+                                  return calc(node.body)
+                              if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+                                  return node.value
+                              if isinstance(node, ast.BinOp) and type(node.op) in ops:
+                                  return ops[type(node.op)](calc(node.left), calc(node.right))
+                              if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+                                  x = calc(node.operand)
+                                  return x if isinstance(node.op, ast.UAdd) else -x
+                              raise ValueError()
+                          result = calc(tree)
+                          if not isinstance(result, (int, float)) or abs(result) == float("inf"):
+                              raise ValueError()
+                          self.expression = str(result)
+                      except Exception:
+                          self.expression = ""
+                          self.display.text = "Error"
+                          return
+                  else:
+                      self.expression += ({"×":"*", "÷":"/"}.get(value, value))
+                  self.display.text = self.expression.replace("*", "×").replace("/", "÷") or "0"
+
+          NeonCalculator().run()
+          PY
+          cat > app/buildozer.spec <<'SPEC'
+          [app]
+          title = Neon Calculator
+          package.name = neoncalculator
+          package.domain = org.maga
+          source.dir = .
+          source.include_exts = py
+          version = 1.0
+          requirements = python3,kivy
+          orientation = portrait
+          fullscreen = 0
+
+          [buildozer]
+          log_level = 2
+          warn_on_root = 1
+          SPEC
+          cd app
+          export PATH="$HOME/.local/bin:$PATH"
+          buildozer android debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Neon-Calculator-APK
+          path: app/bin/*.apk
