@@ -8,34 +8,39 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Download repository
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Install Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Install Buildozer
+      - name: Install Android tools
+        run: |
+          sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2" "cmdline-tools;latest"
+          yes | sdkmanager --licenses
+
+      - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            git zip unzip autoconf libtool pkg-config \
-            zlib1g-dev libncurses5-dev libncursesw5-dev \
-            libtinfo6 cmake libffi-dev libssl-dev \
-            build-essential
-          pip install --user buildozer cython==0.29.36
+          sudo apt-get install -y git zip unzip autoconf libtool \
+            pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev \
+            libtinfo6 cmake libffi-dev libssl-dev build-essential
 
-      - name: Create Android app
+      - name: Install Python tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install buildozer cython==0.29.36
+
+      - name: Create Android calculator
         run: |
           mkdir -p app
           cat > app/main.py <<'PY'
@@ -44,29 +49,30 @@ jobs:
           from kivy.uix.gridlayout import GridLayout
           from kivy.uix.button import Button
           from kivy.uix.label import Label
+          import ast
+          import operator
 
           class NeonCalculator(App):
               def build(self):
                   self.expression = ""
                   root = BoxLayout(orientation="vertical", padding=15, spacing=10)
                   root.canvas.before.clear()
-                  self.display = Label(text="0", font_size=40, size_hint_y=.25)
+                  self.display = Label(text="0", font_size=38, color=(0, 1, 1, 1))
                   root.add_widget(self.display)
                   grid = GridLayout(cols=4, spacing=8)
                   buttons = ["AC", "⌫", "%", "÷", "7", "8", "9", "×",
                              "4", "5", "6", "-", "1", "2", "3", "+",
                              "0", "00", ".", "="]
                   for item in buttons:
-                      b = Button(text=item, font_size=25,
-                                 background_normal="", background_color=(0.05, 0.8, 0.95, 1))
+                      b = Button(text=item, font_size=24,
+                                 background_normal="",
+                                 background_color=(0.05, 0.15, 0.25, 1))
                       b.bind(on_press=self.press)
                       grid.add_widget(b)
                   root.add_widget(grid)
                   return root
 
               def press(self, instance):
-                  import ast
-                  import operator
                   value = instance.text
                   if value == "AC":
                       self.expression = ""
@@ -75,10 +81,14 @@ jobs:
                   elif value == "=":
                       try:
                           expr = self.expression.replace("×", "*").replace("÷", "/")
-                          tree = ast.parse(expr, mode="eval")
-                          ops = {ast.Add: operator.add, ast.Sub: operator.sub,
-                                 ast.Mult: operator.mul, ast.Div: operator.truediv,
-                                 ast.Mod: operator.mod}
+                          ops = {
+                              ast.Add: operator.add,
+                              ast.Sub: operator.sub,
+                              ast.Mult: operator.mul,
+                              ast.Div: operator.truediv,
+                              ast.Mod: operator.mod
+                          }
+
                           def calc(node):
                               if isinstance(node, ast.Expression):
                                   return calc(node.body)
@@ -90,20 +100,20 @@ jobs:
                                   x = calc(node.operand)
                                   return x if isinstance(node.op, ast.UAdd) else -x
                               raise ValueError()
-                          result = calc(tree)
-                          if not isinstance(result, (int, float)) or abs(result) == float("inf"):
-                              raise ValueError()
+
+                          result = calc(ast.parse(expr, mode="eval"))
                           self.expression = str(result)
                       except Exception:
                           self.expression = ""
                           self.display.text = "Error"
                           return
                   else:
-                      self.expression += ({"×":"*", "÷":"/"}.get(value, value))
-                  self.display.text = self.expression.replace("*", "×").replace("/", "÷") or "0"
+                      self.expression += value
+                  self.display.text = self.expression or "0"
 
           NeonCalculator().run()
           PY
+
           cat > app/buildozer.spec <<'SPEC'
           [app]
           title = Neon Calculator
@@ -115,13 +125,18 @@ jobs:
           requirements = python3,kivy
           orientation = portrait
           fullscreen = 0
+          android.api = 33
+          android.minapi = 23
+          android.build_tools_version = 33.0.2
 
           [buildozer]
           log_level = 2
           warn_on_root = 1
           SPEC
+
+      - name: Build APK
+        run: |
           cd app
-          export PATH="$HOME/.local/bin:$PATH"
           buildozer android debug
 
       - name: Upload APK
